@@ -107,10 +107,11 @@ compile = do
         s <- readNextString
         case s of
             Nothing   -> liftIO exitSuccess
-            Just name -> get >>= \vm ->
-                         put vm { dictionary = (name, accumulate (return ())):(dictionary vm), mode = Interpret }
+            Just name -> do action <- accumulate (return ())
+                            vm <- get
+                            put vm { dictionary = (name, action):(dictionary vm), mode = Interpret }
     where accumulate a = getNextExpr >>= \expr -> case expr of
             Nothing          -> liftIO exitSuccess 
-            Just (Word ";")  -> a
+            Just (Word ";")  -> return a
             Just (Word w)    -> accumulate (a >> interpretWord w)
             Just (Literal n) -> accumulate (a >> push n)
