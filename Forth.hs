@@ -46,11 +46,6 @@ emptyVM :: VirtualMachine
 emptyVM = VirtualMachine { stack = [], buffer = "", mode = Interpret, dictionary = [] }
 
 
-modeFunc :: VMMode -> Forth ()
-modeFunc Interpret = interpret
-modeFunc Compile   = compile
-
-
 push :: Val -> Forth ()
 push x = get >>= \vm -> put vm { stack = x:stack vm }
 
@@ -61,20 +56,20 @@ pop = get >>= \vm -> case stack vm of
     (x:xs)  -> put vm { stack = xs } >> return x
 
 
-readNextString :: Forth (Maybe String)
+readNextString :: Forth String
 readNextString = get >>= \vm -> if (null . buffer) vm
     then do eof <- liftIO isEOF
-            if eof then return Nothing
+            if eof then (liftIO exitSuccess)
                    else do x <- liftIO getLine
                            put vm { buffer = map toUpper x }
                            readNextString
     else do let (ex, rest) = break isSpace $ (dropWhile isSpace . buffer) vm
             put vm { buffer = rest }
-            return $ Just ex
+            return ex
 
 
-getNextExpr :: Forth (Maybe Expr)
-getNextExpr = readNextString >>= traverse makeExpr
+getNextExpr :: Forth Expr
+getNextExpr = makeExpr =<< readNextString
 
 
 makeExpr :: String -> Forth Expr
@@ -91,9 +86,8 @@ lookupWord w d = fmap snd $ find ((w ==) . fst) d
 
 interpret :: Forth ()
 interpret = getNextExpr >>= \expr -> case expr of
-    Just (Literal n) -> push n
-    Just (Word w)    -> interpretWord w
-    Nothing          -> liftIO exitSuccess
+    Word w    -> interpretWord w
+    Literal n -> push n
 
 
 interpretWord :: String -> Forth ()
@@ -102,16 +96,38 @@ interpretWord w = get >>= \vm -> fromMaybe
     (lookupWord w (dictionary vm))
 
 
+interpretIf :: Forth () -> Forth () -> Forth ()
+interpretIf tb fb = pop >>= \x -> if (x /= 0) then tb else fb
+
+
 compile :: Forth ()
 compile = do
-        s <- readNextString
-        case s of
-            Nothing   -> liftIO exitSuccess
-            Just name -> do action <- accumulate (return ())
-                            vm <- get
-                            put vm { dictionary = (name, action):(dictionary vm), mode = Interpret }
+        name <- readNextString
+        action <- accumulate (return ())
+        vm <- get
+        put vm { dictionary = (name, action):dictionary vm, mode = Interpret }
     where accumulate a = getNextExpr >>= \expr -> case expr of
-            Nothing          -> liftIO exitSuccess 
-            Just (Word ";")  -> return a
-            Just (Word w)    -> accumulate (a >> interpretWord w)
-            Just (Literal n) -> accumulate (a >> push n)
+            Word ";"  -> return a
+            Word "IF" -> compileIf >>= \i -> accumulate (a >> i)
+            Word w    -> accumulate (a >> interpretWord w)
+            Literal n -> accumulate (a >> push n)
+
+
+compileIf :: Forth (Forth ())
+compileIf = accumulate (return (), return ()) True
+    where accumulate a q = getNextExpr >>= \expr -> case expr of
+            Word "THEN" -> return $ uncurry interpretIf a
+            Word "ELSE" -> accumulate a False
+            Word w      -> accumulate (choiceApply a (>> interpretWord w) q) q
+            Literal n   -> accumulate (choiceApply a (>> push n) q) q
+
+
+choiceApply :: (a, a) -> (a -> a) -> Bool -> (a, a)
+choiceApply (x, y) f True  = (f x, y)
+choiceApply (x, y) f False = (x, f y)
+
+
+execute :: Forth ()
+execute = get >>= \vm -> case mode vm of
+    Interpret -> interpret
+    Compile   -> compile

@@ -8,7 +8,7 @@ import Primitives
 
 run :: VirtualMachine -> IO ()
 run vm = do
-    (result, newState) <- runStateT ((runErrorT . modeFunc . mode) vm) vm
+    (result, newState) <- runStateT (runErrorT execute) vm
     case result of
         Left err  -> putStrLn $ "Error: " ++ err
         _         -> return () 
