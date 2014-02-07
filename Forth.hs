@@ -47,7 +47,7 @@ emptyVM = VirtualMachine { stack = [], buffer = "", mode = Interpret, dictionary
 
 
 push :: Val -> Forth ()
-push x = get >>= \vm -> put vm { stack = x:stack vm }
+push x = modify $ \vm -> vm { stack = x:stack vm }
 
 
 pop :: Forth Val
@@ -59,7 +59,7 @@ pop = get >>= \vm -> case stack vm of
 readNextString :: Forth String
 readNextString = get >>= \vm -> if (null . buffer) vm
     then do eof <- liftIO isEOF
-            if eof then (liftIO exitSuccess)
+            if eof then liftIO exitSuccess
                    else do x <- liftIO getLine
                            put vm { buffer = map toUpper x }
                            readNextString
@@ -85,9 +85,7 @@ lookupWord w d = fmap snd $ find ((w ==) . fst) d
 
 
 interpret :: Forth ()
-interpret = getNextExpr >>= \expr -> case expr of
-    Word w    -> interpretWord w
-    Literal n -> push n
+interpret = getNextExpr >>= defaultAction
 
 
 interpretWord :: String -> Forth ()
@@ -97,29 +95,32 @@ interpretWord w = get >>= \vm -> fromMaybe
 
 
 interpretIf :: Forth () -> Forth () -> Forth ()
-interpretIf tb fb = pop >>= \x -> if (x /= 0) then tb else fb
+interpretIf tb fb = pop >>= \x -> if x /= 0 then tb else fb
 
 
 compile :: Forth ()
 compile = do
         name <- readNextString
         action <- accumulate (return ())
-        vm <- get
-        put vm { dictionary = (name, action):dictionary vm, mode = Interpret }
+        modify $ \vm -> vm { dictionary = (name, action):dictionary vm, mode = Interpret }
     where accumulate a = getNextExpr >>= \expr -> case expr of
             Word ";"  -> return a
             Word "IF" -> compileIf >>= \i -> accumulate (a >> i)
-            Word w    -> accumulate (a >> interpretWord w)
-            Literal n -> accumulate (a >> push n)
+            e         -> accumulate (a >> defaultAction e)
 
 
 compileIf :: Forth (Forth ())
 compileIf = accumulate (return (), return ()) True
     where accumulate a q = getNextExpr >>= \expr -> case expr of
+            Word "IF"   -> compileIf >>= \i -> accumulate (choiceApply a (>> i) q) q
             Word "THEN" -> return $ uncurry interpretIf a
             Word "ELSE" -> accumulate a False
-            Word w      -> accumulate (choiceApply a (>> interpretWord w) q) q
-            Literal n   -> accumulate (choiceApply a (>> push n) q) q
+            e           -> accumulate (choiceApply a (>> defaultAction e) q) q
+
+
+defaultAction :: Expr -> Forth ()
+defaultAction (Word w)    = interpretWord w
+defaultAction (Literal n) = push n
 
 
 choiceApply :: (a, a) -> (a -> a) -> Bool -> (a, a)
